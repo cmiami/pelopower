@@ -11,6 +11,15 @@ public final class WheelTracker {
     private long cumulativeRevolutions;
     private int lastEventTime1024;
 
+    /** Applies the Bluetooth CSC Set Cumulative Value control-point procedure. */
+    public synchronized void setCumulativeRevolutions(long requestedRevolutions) {
+        cumulativeRevolutions = requestedRevolutions & 0xffffffffL;
+        partialRevolution = 0;
+        // Make the next sample establish a fresh timing baseline instead of adding time that
+        // elapsed while the control-point request was being processed.
+        lastSampleMillis = -1;
+    }
+
     public synchronized State accept(int speedCentiKph, long monotonicMillis) {
         if (lastSampleMillis >= 0 && monotonicMillis >= lastSampleMillis && speedCentiKph > 0) {
             long elapsedMillis = Math.min(5_000L, monotonicMillis - lastSampleMillis);

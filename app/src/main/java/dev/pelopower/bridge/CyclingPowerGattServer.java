@@ -19,9 +19,14 @@ import android.bluetooth.le.BluetoothLeAdvertiser;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.ParcelUuid;
 import android.util.Log;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.Set;
 import java.util.UUID;
@@ -36,18 +41,34 @@ public final class CyclingPowerGattServer {
     private static final String TAG = "PeloPower";
     private static final UUID CPS = uuid16(0x1818);
     private static final UUID CSCS = uuid16(0x1816);
+    private static final UUID DEVICE_INFORMATION = uuid16(0x180A);
     private static final UUID MEASUREMENT = uuid16(0x2A63);
     private static final UUID FEATURE = uuid16(0x2A65);
     private static final UUID CSC_MEASUREMENT = uuid16(0x2A5B);
     private static final UUID CSC_FEATURE = uuid16(0x2A5C);
     private static final UUID SENSOR_LOCATION = uuid16(0x2A5D);
+    private static final UUID SC_CONTROL_POINT = uuid16(0x2A55);
+    private static final UUID MANUFACTURER_NAME = uuid16(0x2A29);
+    private static final UUID MODEL_NUMBER = uuid16(0x2A24);
+    private static final UUID FIRMWARE_REVISION = uuid16(0x2A26);
     private static final UUID CCCD = uuid16(0x2902);
+    private static final long SERVICE_REGISTRATION_TIMEOUT_MILLIS = 3_000L;
+    private static final long STARTUP_RETRY_DELAY_MILLIS = 5_000L;
+    private static final int SC_CP_SET_CUMULATIVE_VALUE = 0x01;
+    private static final int SC_CP_RESPONSE_CODE = 0x10;
+    private static final int SC_CP_SUCCESS = 0x01;
+    private static final int SC_CP_OPCODE_NOT_SUPPORTED = 0x02;
+    private static final int SC_CP_INVALID_PARAMETER = 0x03;
+    private static final int SC_CP_CCCD_IMPROPERLY_CONFIGURED = 0x81;
 
     private final Context context;
     private final StatusListener statusListener;
+    private final Handler handler = new Handler(Looper.getMainLooper());
     private final Set<BluetoothDevice> powerSubscribers =
             Collections.newSetFromMap(new ConcurrentHashMap<>());
     private final Set<BluetoothDevice> cadenceSubscribers =
+            Collections.newSetFromMap(new ConcurrentHashMap<>());
+    private final Set<BluetoothDevice> controlPointSubscribers =
             Collections.newSetFromMap(new ConcurrentHashMap<>());
     private final CadenceTracker cadenceTracker = new CadenceTracker();
     private final WheelTracker wheelTracker = new WheelTracker();
@@ -55,13 +76,17 @@ public final class CyclingPowerGattServer {
     private BluetoothGattServer gattServer;
     private BluetoothGattCharacteristic measurement;
     private BluetoothGattCharacteristic cadenceMeasurement;
+    private BluetoothGattCharacteristic cadenceControlPoint;
     private BluetoothGattService pendingCadenceService;
+    private BluetoothGattService pendingDeviceInformationService;
     private BluetoothLeAdvertiser advertiser;
     private boolean advertising;
     private boolean starting;
     private AdvertiseSettings advertiseSettings;
     private AdvertiseData advertiseData;
     private AdvertiseData scanResponse;
+    private UUID registeringService;
+    private volatile boolean shouldRun;
 
     public CyclingPowerGattServer(Context context, StatusListener statusListener) {
         this.context = context.getApplicationContext();
@@ -69,6 +94,12 @@ public final class CyclingPowerGattServer {
     }
 
     public String start() {
+        shouldRun = true;
+        handler.removeCallbacks(startupRetry);
+        return startAttempt();
+    }
+
+    private String startAttempt() {
         if (!hasBluetoothPermission()) return "Bluetooth permission missing";
         BluetoothManager manager = context.getSystemService(BluetoothManager.class);
         if (manager == null || manager.getAdapter() == null) return "Bluetooth unavailable";
@@ -78,7 +109,7 @@ public final class CyclingPowerGattServer {
             return "BLE peripheral advertising unsupported";
         }
 
-        stop();
+        stopTransport();
         gattServer = manager.openGattServer(context, callback);
         if (gattServer == null) return "Could not open GATT server";
 
@@ -103,7 +134,7 @@ public final class CyclingPowerGattServer {
                 SENSOR_LOCATION,
                 BluetoothGattCharacteristic.PROPERTY_READ,
                 BluetoothGattCharacteristic.PERMISSION_READ);
-        location.setValue(new byte[] {0}); // Other/unspecified.
+        location.setValue(new byte[] {0x0D}); // Rear hub.
 
         pendingCadenceService = new BluetoothGattService(
                 CSCS, BluetoothGattService.SERVICE_TYPE_PRIMARY);
@@ -123,10 +154,28 @@ public final class CyclingPowerGattServer {
                 SENSOR_LOCATION,
                 BluetoothGattCharacteristic.PROPERTY_READ,
                 BluetoothGattCharacteristic.PERMISSION_READ);
-        cadenceLocation.setValue(new byte[] {0});
+        cadenceLocation.setValue(new byte[] {0x0D}); // Rear hub.
+        cadenceControlPoint = new BluetoothGattCharacteristic(
+                SC_CONTROL_POINT,
+                BluetoothGattCharacteristic.PROPERTY_WRITE
+                        | BluetoothGattCharacteristic.PROPERTY_INDICATE,
+                BluetoothGattCharacteristic.PERMISSION_WRITE);
+        cadenceControlPoint.addDescriptor(new BluetoothGattDescriptor(
+                CCCD,
+                BluetoothGattDescriptor.PERMISSION_READ | BluetoothGattDescriptor.PERMISSION_WRITE));
         pendingCadenceService.addCharacteristic(cadenceMeasurement);
         pendingCadenceService.addCharacteristic(cadenceFeature);
         pendingCadenceService.addCharacteristic(cadenceLocation);
+        pendingCadenceService.addCharacteristic(cadenceControlPoint);
+
+        pendingDeviceInformationService = new BluetoothGattService(
+                DEVICE_INFORMATION, BluetoothGattService.SERVICE_TYPE_PRIMARY);
+        pendingDeviceInformationService.addCharacteristic(readOnlyString(
+                MANUFACTURER_NAME, "PeloPower"));
+        pendingDeviceInformationService.addCharacteristic(readOnlyString(
+                MODEL_NUMBER, "Peloton BLE Bridge"));
+        pendingDeviceInformationService.addCharacteristic(readOnlyString(
+                FIRMWARE_REVISION, BuildConfig.VERSION_NAME));
 
         advertiser = adapter.getBluetoothLeAdvertiser();
         if (advertiser == null) return "BLE advertiser unavailable";
@@ -139,18 +188,25 @@ public final class CyclingPowerGattServer {
         advertiseData = new AdvertiseData.Builder()
                 .addServiceUuid(new ParcelUuid(CPS))
                 .addServiceUuid(new ParcelUuid(CSCS))
+                // Garmin may use a passive scan while adding sensors. Keep the local name in the
+                // primary packet so discovery does not depend on receiving a scan response.
+                .setIncludeDeviceName(true)
                 .setIncludeTxPowerLevel(false)
                 .build();
         scanResponse = new AdvertiseData.Builder()
-                .setIncludeDeviceName(true)
                 .addManufacturerData(0xFFFF, new byte[] {'P', 'e', 'l', 'o', 'P', 'o', 'w', 'e', 'r'})
                 .build();
 
         service.addCharacteristic(measurement);
         service.addCharacteristic(feature);
         service.addCharacteristic(location);
-        if (!gattServer.addService(service)) return "Could not register Cycling Power Service";
         starting = true;
+        registeringService = CPS;
+        if (!gattServer.addService(service)) {
+            failStartup("Could not register Cycling Power Service");
+            return "Could not register Cycling Power Service; retry scheduled";
+        }
+        scheduleRegistrationTimeout();
         return "Registering BLE Cycling Power Service";
     }
 
@@ -182,22 +238,39 @@ public final class CyclingPowerGattServer {
     }
 
     public void stop() {
+        shouldRun = false;
+        handler.removeCallbacks(startupRetry);
+        stopTransport();
+    }
+
+    private void stopTransport() {
+        handler.removeCallbacks(serviceRegistrationTimeout);
         if (hasBluetoothPermission()) {
-            if (advertiser != null && advertising) advertiser.stopAdvertising(advertiseCallback);
+            if (advertiser != null) {
+                try {
+                    advertiser.stopAdvertising(advertiseCallback);
+                } catch (RuntimeException e) {
+                    Log.w(TAG, "Could not stop BLE advertising cleanly", e);
+                }
+            }
             if (gattServer != null) gattServer.close();
         }
         powerSubscribers.clear();
         cadenceSubscribers.clear();
+        controlPointSubscribers.clear();
         advertiser = null;
         gattServer = null;
         measurement = null;
         cadenceMeasurement = null;
+        cadenceControlPoint = null;
         pendingCadenceService = null;
+        pendingDeviceInformationService = null;
         advertising = false;
         starting = false;
         advertiseSettings = null;
         advertiseData = null;
         scanResponse = null;
+        registeringService = null;
     }
 
     public boolean isReady() {
@@ -207,6 +280,7 @@ public final class CyclingPowerGattServer {
     public int subscriberCount() {
         java.util.HashSet<BluetoothDevice> all = new java.util.HashSet<>(powerSubscribers);
         all.addAll(cadenceSubscribers);
+        all.addAll(controlPointSubscribers);
         return all.size();
     }
 
@@ -220,50 +294,112 @@ public final class CyclingPowerGattServer {
 
     private void beginAdvertising() {
         if (advertiser == null || advertiseSettings == null || advertising) return;
+        registeringService = null;
+        handler.removeCallbacks(serviceRegistrationTimeout);
         try {
             advertiser.startAdvertising(
                     advertiseSettings, advertiseData, scanResponse, advertiseCallback);
         } catch (SecurityException e) {
             Log.e(TAG, "BLE advertising permission denied", e);
-            statusListener.onBleStatus("Advertising permission denied");
+            failStartup("Advertising permission denied");
+        } catch (RuntimeException e) {
+            Log.e(TAG, "BLE advertising startup failed", e);
+            failStartup("Advertising startup failed: " + e.getClass().getSimpleName());
         }
+    }
+
+    private void scheduleRegistrationTimeout() {
+        handler.removeCallbacks(serviceRegistrationTimeout);
+        handler.postDelayed(
+                serviceRegistrationTimeout, SERVICE_REGISTRATION_TIMEOUT_MILLIS);
+    }
+
+    private void failStartup(String reason) {
+        handler.post(() -> {
+            if (!shouldRun) return;
+            Log.e(TAG, reason);
+            stopTransport();
+            statusListener.onBleStatus(reason + "; retrying in 5 seconds");
+            handler.removeCallbacks(startupRetry);
+            handler.postDelayed(startupRetry, STARTUP_RETRY_DELAY_MILLIS);
+        });
+    }
+
+    private final Runnable serviceRegistrationTimeout = () -> {
+        UUID timedOutService = registeringService;
+        if (!shouldRun || !starting || timedOutService == null) return;
+        failStartup("GATT registration timed out for " + serviceName(timedOutService));
+    };
+
+    private final Runnable startupRetry = this::retryStartup;
+
+    private void retryStartup() {
+        if (!shouldRun) return;
+        String retryStatus = startAttempt();
+        statusListener.onBleStatus(retryStatus);
     }
 
     private final AdvertiseCallback advertiseCallback = new AdvertiseCallback() {
         @Override
         public void onStartSuccess(AdvertiseSettings settingsInEffect) {
-            starting = false;
-            advertising = true;
-            Log.i(TAG, "Cycling Power Service is advertising");
-            statusListener.onBleStatus("Advertising CPS + CSCS");
+            handler.post(() -> {
+                if (!shouldRun) {
+                    if (advertiser != null && hasBluetoothPermission()) {
+                        advertiser.stopAdvertising(this);
+                    }
+                    return;
+                }
+                starting = false;
+                advertising = true;
+                Log.i(TAG, "Cycling Power Service is advertising");
+                statusListener.onBleStatus("Advertising CPS + CSCS");
+            });
         }
 
         @Override
         public void onStartFailure(int errorCode) {
-            starting = false;
-            advertising = false;
-            Log.e(TAG, "BLE advertising failed: " + errorCode);
-            statusListener.onBleStatus("Advertising failed: " + advertiseError(errorCode));
+            failStartup("Advertising failed: " + advertiseError(errorCode));
         }
     };
 
     private final BluetoothGattServerCallback callback = new BluetoothGattServerCallback() {
         @Override
         public void onServiceAdded(int status, BluetoothGattService service) {
-            if (status != BluetoothGatt.GATT_SUCCESS) {
-                starting = false;
-                Log.e(TAG, "Cycling service registration failed: " + status);
-                statusListener.onBleStatus("GATT registration failed: " + status);
-                return;
-            }
-            if (CPS.equals(service.getUuid()) && pendingCadenceService != null && gattServer != null) {
-                if (!gattServer.addService(pendingCadenceService)) {
-                    Log.e(TAG, "Could not register Cycling Speed and Cadence Service");
-                    statusListener.onBleStatus("Could not register CSCS");
+            handler.post(() -> {
+                if (!shouldRun || gattServer == null || service == null) return;
+                UUID serviceUuid = service.getUuid();
+                if (!serviceUuid.equals(registeringService)) {
+                    Log.w(TAG, "Ignoring unexpected GATT registration callback for " + serviceUuid);
+                    return;
                 }
-            } else if (CSCS.equals(service.getUuid())) {
-                beginAdvertising();
-            }
+                handler.removeCallbacks(serviceRegistrationTimeout);
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    failStartup("GATT registration failed for " + serviceName(serviceUuid)
+                            + ": " + status);
+                    return;
+                }
+                if (CPS.equals(serviceUuid)
+                        && pendingCadenceService != null
+                        && gattServer != null) {
+                    registeringService = CSCS;
+                    if (!gattServer.addService(pendingCadenceService)) {
+                        failStartup("Could not register Cycling Speed and Cadence Service");
+                        return;
+                    }
+                    scheduleRegistrationTimeout();
+                } else if (CSCS.equals(serviceUuid)
+                        && pendingDeviceInformationService != null
+                        && gattServer != null) {
+                    registeringService = DEVICE_INFORMATION;
+                    if (!gattServer.addService(pendingDeviceInformationService)) {
+                        failStartup("Could not register Device Information Service");
+                        return;
+                    }
+                    scheduleRegistrationTimeout();
+                } else if (DEVICE_INFORMATION.equals(serviceUuid)) {
+                    beginAdvertising();
+                }
+            });
         }
 
         @Override
@@ -271,6 +407,7 @@ public final class CyclingPowerGattServer {
             if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 powerSubscribers.remove(device);
                 cadenceSubscribers.remove(device);
+                controlPointSubscribers.remove(device);
             }
             Log.i(TAG, "BLE client state=" + newState + " status=" + status);
         }
@@ -300,10 +437,25 @@ public final class CyclingPowerGattServer {
                 BluetoothGattDescriptor descriptor) {
             if (!hasBluetoothPermission() || gattServer == null) return;
             Set<BluetoothDevice> target = subscribersFor(descriptor);
-            byte[] value = target.contains(device)
-                    ? BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    : BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE;
-            gattServer.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value);
+            byte[] value;
+            if (!target.contains(device)) {
+                value = BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE;
+            } else if (isControlPointDescriptor(descriptor)) {
+                value = BluetoothGattDescriptor.ENABLE_INDICATION_VALUE;
+            } else {
+                value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE;
+            }
+            if (offset > value.length) {
+                gattServer.sendResponse(
+                        device, requestId, BluetoothGatt.GATT_INVALID_OFFSET, offset, null);
+            } else {
+                gattServer.sendResponse(
+                        device,
+                        requestId,
+                        BluetoothGatt.GATT_SUCCESS,
+                        offset,
+                        java.util.Arrays.copyOfRange(value, offset, value.length));
+            }
         }
 
         @Override
@@ -316,26 +468,135 @@ public final class CyclingPowerGattServer {
                 int offset,
                 byte[] value) {
             Set<BluetoothDevice> target = subscribersFor(descriptor);
-            if (java.util.Arrays.equals(value, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)) {
+            byte[] enableValue = isControlPointDescriptor(descriptor)
+                    ? BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+                    : BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE;
+            int status = BluetoothGatt.GATT_SUCCESS;
+            if (preparedWrite || offset != 0) {
+                status = BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED;
+            } else if (java.util.Arrays.equals(value, enableValue)) {
                 target.add(device);
-            } else {
+            } else if (java.util.Arrays.equals(
+                    value, BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE)) {
                 target.remove(device);
+            } else {
+                status = BluetoothGatt.GATT_FAILURE;
             }
             if (responseNeeded && hasBluetoothPermission() && gattServer != null) {
-                gattServer.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value);
+                gattServer.sendResponse(device, requestId, status, offset, value);
             }
+        }
+
+        @Override
+        public void onCharacteristicWriteRequest(
+                BluetoothDevice device,
+                int requestId,
+                BluetoothGattCharacteristic characteristic,
+                boolean preparedWrite,
+                boolean responseNeeded,
+                int offset,
+                byte[] value) {
+            if (!hasBluetoothPermission() || gattServer == null) return;
+            if (!SC_CONTROL_POINT.equals(characteristic.getUuid())) {
+                if (responseNeeded) {
+                    gattServer.sendResponse(
+                            device,
+                            requestId,
+                            BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED,
+                            offset,
+                            null);
+                }
+                return;
+            }
+            if (!controlPointSubscribers.contains(device)) {
+                if (responseNeeded) {
+                    gattServer.sendResponse(
+                            device,
+                            requestId,
+                            SC_CP_CCCD_IMPROPERLY_CONFIGURED,
+                            offset,
+                            null);
+                }
+                return;
+            }
+            if (preparedWrite || offset != 0 || value == null || value.length == 0) {
+                if (responseNeeded) {
+                    gattServer.sendResponse(
+                            device,
+                            requestId,
+                            BluetoothGatt.GATT_INVALID_ATTRIBUTE_LENGTH,
+                            offset,
+                            null);
+                }
+                return;
+            }
+
+            int opcode = value[0] & 0xff;
+            int result = SC_CP_OPCODE_NOT_SUPPORTED;
+            if (opcode == SC_CP_SET_CUMULATIVE_VALUE) {
+                if (value.length == 5) {
+                    long requestedRevolutions = Integer.toUnsignedLong(
+                            ByteBuffer.wrap(value, 1, 4)
+                                    .order(ByteOrder.LITTLE_ENDIAN)
+                                    .getInt());
+                    wheelTracker.setCumulativeRevolutions(requestedRevolutions);
+                    result = SC_CP_SUCCESS;
+                } else {
+                    result = SC_CP_INVALID_PARAMETER;
+                }
+            }
+            if (responseNeeded) {
+                gattServer.sendResponse(
+                        device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value);
+            }
+            indicateControlPointResult(device, opcode, result);
         }
     };
 
+    private void indicateControlPointResult(BluetoothDevice device, int requestOpcode, int result) {
+        if (gattServer == null || cadenceControlPoint == null || !hasBluetoothPermission()) return;
+        byte[] response = new byte[] {
+                (byte) SC_CP_RESPONSE_CODE, (byte) requestOpcode, (byte) result
+        };
+        if (Build.VERSION.SDK_INT >= 33) {
+            gattServer.notifyCharacteristicChanged(device, cadenceControlPoint, true, response);
+        } else {
+            cadenceControlPoint.setValue(response);
+            gattServer.notifyCharacteristicChanged(device, cadenceControlPoint, true);
+        }
+    }
+
     private Set<BluetoothDevice> subscribersFor(BluetoothGattDescriptor descriptor) {
         BluetoothGattCharacteristic characteristic = descriptor.getCharacteristic();
-        return characteristic != null && CSC_MEASUREMENT.equals(characteristic.getUuid())
-                ? cadenceSubscribers
-                : powerSubscribers;
+        if (characteristic == null) return powerSubscribers;
+        if (CSC_MEASUREMENT.equals(characteristic.getUuid())) return cadenceSubscribers;
+        if (SC_CONTROL_POINT.equals(characteristic.getUuid())) return controlPointSubscribers;
+        return powerSubscribers;
+    }
+
+    private static boolean isControlPointDescriptor(BluetoothGattDescriptor descriptor) {
+        BluetoothGattCharacteristic characteristic = descriptor.getCharacteristic();
+        return characteristic != null && SC_CONTROL_POINT.equals(characteristic.getUuid());
     }
 
     private static UUID uuid16(int value) {
         return UUID.fromString(String.format("0000%04x-0000-1000-8000-00805f9b34fb", value));
+    }
+
+    private static BluetoothGattCharacteristic readOnlyString(UUID uuid, String value) {
+        BluetoothGattCharacteristic characteristic = new BluetoothGattCharacteristic(
+                uuid,
+                BluetoothGattCharacteristic.PROPERTY_READ,
+                BluetoothGattCharacteristic.PERMISSION_READ);
+        characteristic.setValue(value.getBytes(StandardCharsets.UTF_8));
+        return characteristic;
+    }
+
+    private static String serviceName(UUID uuid) {
+        if (CPS.equals(uuid)) return "Cycling Power Service";
+        if (CSCS.equals(uuid)) return "Cycling Speed and Cadence Service";
+        if (DEVICE_INFORMATION.equals(uuid)) return "Device Information Service";
+        return String.valueOf(uuid);
     }
 
     private static String advertiseError(int errorCode) {

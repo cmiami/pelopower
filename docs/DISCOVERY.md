@@ -5,34 +5,33 @@ Bike+ contract was validated on model `g700`, Android 13, tablet build `TA.26052
 2.4.508 on 2026-08-02. Keep recording version information because Peloton OTA updates can still
 change the private interface.
 
-The same G700 image has a confirmed firmware-level BLE-peripheral blocker. Android reports
-multiple-advertisement support, registers CPS/CSCS, and calls the advertising success callback,
-but an epix Pro (Gen 2) and raw Mac CoreBluetooth scans detect no packet. The result is unchanged
-with power/cadence at zero, high and low transmit power, fast and slow intervals, advertisement-only
-payloads, legacy and extended advertising, random and public addresses, all relevant permissions,
-a Bluetooth restart, and Peloton's heart-rate scanner stopped. Do not use pedaling or workout state
-as a discovery diagnostic: advertising starts before either one.
+The G700 internal radio is confirmed to transmit. An iPhone running nRF Connect detects
+`PLTN-RTR01`, connects, and discovers Cycling Power (`0x1818`) and Cycling Speed and Cadence
+(`0x1816`). Earlier Mac scans were performed out of range and are not evidence of an RF blocker.
+An epix Pro (Gen 2), however, has not listed the peripheral in native sensor search. Do not use
+pedaling or workout state as a discovery diagnostic: advertising starts before either one and idle
+receivers are sent zero-valued measurements once connected.
 
-An untouched build of doudar Grupetto v0.0.37 was run as the control. Its watchdog reported active
-advertising and Android showed FTMS, CPS, CSCS, and Device Information registered, but an external
-scan still found zero bike packets. Its source uses the same Android advertiser API and differs by
-adding FTMS/DIS, scan-response metadata, restart logic, and older permissions; none changes the RF
-result on this firmware. Its repository has no declared license, so treat it as prior art unless
-the author clarifies reuse terms.
+An untouched build of doudar Grupetto v0.0.37 was also run as a control. Its source uses the same
+Android advertiser API and places service UUIDs in the primary advertisement and the device name in
+the scan response. It also exposes FTMS and Device Information, but its open Garmin reports show
+that Android visibility does not guarantee Garmin native sensor discovery. Its repository has no
+declared license, so treat it as prior art unless the author clarifies reuse terms.
 
-The decisive capture came from Android's Developer Options Bluetooth HCI snoop log. It contains
-the `PPROBE-modern-legacy` payload and successful controller completions for Extended Advertising
-Parameters (`0x2036`), Data (`0x2037`), Scan Response (`0x2038`), and Enable (`0x2039`). Parameters
-requested all three advertising channels, +1 dBm, and a 100–131 ms interval. A privileged shell
-control repeated the sequence with the public adapter address and received the same successful
-completion, while the external scanner found 188 other devices and zero bike packets. This places
-the failure after HCI command acceptance, in the MediaTek controller/firmware RF path.
+Android's Developer Options Bluetooth HCI snoop log contains the application payload and successful
+controller completions for Extended Advertising Parameters (`0x2036`), Data (`0x2037`), Scan
+Response (`0x2038`), and Enable (`0x2039`). Inspection of the exact G700 Bluetooth serializer also
+shows that the app-facing `AdvertiseData` path has no field for the Cycling Power Sensor Appearance
+AD type (`0x19`). The Bluetooth Cycling Power Profile requires that appearance in advertising data
+or scan response, making it the leading explanation for Garmin filtering the peripheral before a
+GATT connection. The current APK additionally puts the local name in the primary packet and exposes
+Device Information so those independently testable compatibility variables can be ruled out.
 
-The production workaround does not ask that controller to transmit. PeloPower 1.1 can send the
-already-encoded CPS/CSCS measurements over Android USB host mode to the checked-in nRF52840 firmware.
-The dongle then advertises and serves GATT on its own controller and antenna. The G700 advertises
-`android.hardware.usb.host`, exposes xHCI host buses, and makes USB endpoints available through
-`UsbManager`; the remaining acceptance step is a physical dongle/Garmin test.
+The hardware fallback sends the already-encoded CPS/CSCS measurements over Android USB host mode to
+the checked-in nRF52840 firmware. The dongle advertises the complete profile, including Appearance,
+on its own controller and antenna. The G700 advertises `android.hardware.usb.host`, exposes xHCI host
+buses, and makes USB endpoints available through `UsbManager`; the remaining acceptance step is a
+physical dongle/Garmin test.
 
 ## 1. Establish ADB access
 

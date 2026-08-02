@@ -12,15 +12,16 @@ the Peloton tablet, reads the local sensor service, and exposes standard Bluetoo
 and Cycling Speed and Cadence services to Garmin, Zwift, and other BLE receivers.
 
 Current status: metric decoding and both BLE GATT services are validated on a G700 Cross Training
-Bike+ running Android 13, Affernet 2.4.508, and tablet build TA.260520.D. That image reports BLE
-peripheral support and calls `onStartSuccess`, but repeated Garmin epix Pro (Gen 2) and independent
-Mac scans found no over-the-air advertisement. An untouched Grupetto v0.0.37 control failed the
-same way. A full HCI capture proves Android sent the complete payload and enable command and that
-the MediaTek controller acknowledged both successfully; forcing the public adapter address also
-failed over the air. Direct BLE transmission from this specific G700 firmware is therefore blocked
-below the APK layer. PeloPower 1.1 adds a direct USB-radio path that bypasses that layer using a
-Nordic nRF52840 Dongle; the APK and firmware are compiled, while final Garmin validation awaits the
-physical dongle. Other Bike/Bike+ models can continue using the built-in-radio path.
+Bike+ running Android 13, Affernet 2.4.508, and tablet build TA.260520.D. An iPhone running nRF
+Connect detects `PLTN-RTR01`, connects, and discovers the Cycling Power and Cycling Speed and
+Cadence services, proving that the tablet's internal BLE radio is transmitting. A Garmin epix Pro
+(Gen 2) does not yet list it in native sensor search. The Android build now provides the required
+CSC control point, Device Information, a concrete sensor location, and the local name in the
+primary advertisement; that compatibility revision still needs a Garmin retest. The remaining
+known profile gap is the Cycling Power Sensor Appearance field: the Bluetooth profile requires it
+in advertising or scan-response data, while Android's application advertising API on this image
+does not expose that AD type. PeloPower 1.1 also includes a direct nRF52840 USB-radio path capable
+of emitting the complete raw advertisement, but that hardware path remains untested.
 
 ## What already exists
 
@@ -161,8 +162,8 @@ a final zero measurement and returns to waiting.
 
 Advertising does not depend on pedaling or on a Peloton workout. A receiver that cannot discover
 the service while the bike is idle will not be fixed by starting a workout. On G700 build
-TA.260520.D, Android currently acknowledges advertising without transmitting a detectable packet;
-see the discovery runbook for the isolation tests already completed.
+TA.260520.D, the internal advertisement and GATT services are visible in nRF Connect, but native
+Garmin pairing is not yet validated; see the discovery runbook for the current evidence.
 
 Power, cadence, and speed are in scope. FTMS, ERG/SIM control, ANT+, ride recording, and resistance
 writes remain out of scope for this small sensor bridge.

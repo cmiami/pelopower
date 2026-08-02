@@ -7,7 +7,13 @@ PACKAGE="dev.pelopower.bridge"
 ADB="${ADB:-adb}"
 ADB_ARGS=()
 if [[ -n "${ADB_SERIAL:-}" ]]; then ADB_ARGS+=( -s "$ADB_SERIAL" ); fi
-adb_run() { "$ADB" "${ADB_ARGS[@]}" "$@"; }
+adb_run() {
+    if (( ${#ADB_ARGS[@]} )); then
+        "$ADB" "${ADB_ARGS[@]}" "$@"
+    else
+        "$ADB" "$@"
+    fi
+}
 
 if [[ ! -f "$APK" ]]; then
     echo "Missing APK: $APK" >&2
