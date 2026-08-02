@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">PeloPower</string>
+    <string name="probing">Probing…</string>
+    <string name="snapshot_probe_unavailable">Snapshot probe unavailable: %1$s</string>
+</resources>
