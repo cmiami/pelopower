@@ -16,8 +16,6 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-import java.lang.reflect.Method;
-
 public final class MainActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private TextView status;
@@ -72,12 +70,10 @@ public final class MainActivity extends Activity {
             LegacyServiceProbe.run(this, result -> runOnUiThread(() -> probe.setText(result)));
         }));
 
-        if (BuildConfig.DEBUG) {
-            body.addView(button("Capture raw legacy Binder snapshot", view -> captureDebugSnapshot()));
-            body.addView(button("Test 150 W", view -> injectTestWatts(150)));
-            body.addView(button("Test 300 W", view -> injectTestWatts(300)));
-            body.addView(button("Test 0 W", view -> injectTestWatts(0)));
-        }
+        body.addView(button("Capture raw legacy Binder snapshot", view -> captureDebugSnapshot()));
+        body.addView(button("Test 150 W", view -> injectTestWatts(150)));
+        body.addView(button("Test 300 W", view -> injectTestWatts(300)));
+        body.addView(button("Test 0 W", view -> injectTestWatts(0)));
 
         probe = text(deviceDiagnostics(), 14, Color.DKGRAY);
         probe.setTextIsSelectable(true);
@@ -102,14 +98,7 @@ public final class MainActivity extends Activity {
     }
 
     private void captureDebugSnapshot() {
-        try {
-            Class<?> type = Class.forName("dev.pelopower.bridge.RawBinderSnapshotProbe");
-            Method method = type.getMethod("capture", android.content.Context.class, LegacyServiceProbe.Callback.class);
-            method.invoke(null, this, (LegacyServiceProbe.Callback) result ->
-                    runOnUiThread(() -> probe.setText(result)));
-        } catch (Exception e) {
-            probe.setText(getString(R.string.snapshot_probe_unavailable, e));
-        }
+        RawBinderSnapshotProbe.capture(this, result -> runOnUiThread(() -> probe.setText(result)));
     }
 
     private void requestRuntimePermissions() {

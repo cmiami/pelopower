@@ -10,12 +10,22 @@ android {
         applicationId = "dev.pelopower.bridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 8
-        versionName = "1.3.1"
+        versionCode = 9
+        versionName = "1.3.2"
     }
 
     buildFeatures {
         buildConfig = true
+    }
+
+    val releaseKeystore = providers.environmentVariable("PELOPOWER_KEYSTORE")
+    if (releaseKeystore.isPresent) {
+        signingConfigs.create("distribution") {
+            storeFile = file(releaseKeystore.get())
+            storePassword = providers.environmentVariable("PELOPOWER_STORE_PASSWORD").get()
+            keyAlias = providers.environmentVariable("PELOPOWER_KEY_ALIAS").get()
+            keyPassword = providers.environmentVariable("PELOPOWER_KEY_PASSWORD").get()
+        }
     }
 
     buildTypes {
@@ -34,8 +44,8 @@ android {
         create("headless") {
             initWith(getByName("release"))
             versionNameSuffix = "-headless"
-            // Convenient for bike-side testing. Replace with a private release key for distribution.
-            signingConfig = signingConfigs.getByName("debug")
+            // Local development builds may use the developer’s signing key.
+            signingConfig = signingConfigs.findByName("distribution") ?: signingConfigs.getByName("debug")
         }
     }
 

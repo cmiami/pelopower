@@ -30,19 +30,17 @@ public final class BridgeService extends Service implements PowerSource.Listener
     private static volatile int lastCadence;
     private static volatile int lastSpeedCentiKph;
     private static volatile String bleState = "Stopped";
-    private static volatile String usbState = "USB BLE not connected";
     private static volatile WorkoutGate.State workoutState = WorkoutGate.State.WAITING;
 
     private final WorkoutGate gate = new WorkoutGate();
     private final Handler handler = new Handler(Looper.getMainLooper());
     private PowerSource source;
     private CyclingPowerGattServer ble;
-    private UsbBleBridge usbBle;
     private long lastSampleAt;
     private long lastMetricsLoggedAt;
 
     public static String statusLine() {
-        return status + "\nAndroid BLE: " + bleState + "\nUSB BLE: " + usbState
+        return status + "\nAndroid BLE: " + bleState
                 + "\nWorkout: " + workoutState + "\nPower: " + lastWatts
                 + " W\nCadence: " + lastCadence + " rpm\nSpeed: "
                 + String.format(java.util.Locale.US, "%.2f km/h", lastSpeedCentiKph / 100.0);
@@ -59,11 +57,6 @@ public final class BridgeService extends Service implements PowerSource.Listener
         });
         workoutState = gate.state();
         ensureBle();
-        usbBle = new UsbBleBridge(this, newState -> {
-            usbState = newState;
-            setStatus(newState + "; source=" + sourceName());
-        });
-        usbBle.start();
         source = PelotonPowerSource.forDevice(this);
         source.start(this);
         IntentFilter bluetoothFilter = new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED);
@@ -115,10 +108,10 @@ public final class BridgeService extends Service implements PowerSource.Listener
             if (previous == WorkoutGate.State.WAITING) {
                 ble.beginWorkout(sample.monotonicMillis());
             }
-            publish(sample);
+            ble.publish(sample);
         }
         if (previous == WorkoutGate.State.ACTIVE && workoutState == WorkoutGate.State.WAITING) {
-            publish(new PowerSample(0, 0, 0, sample.monotonicMillis()));
+            ble.publish(new PowerSample(0, 0, 0, sample.monotonicMillis()));
         }
         setStatus("Bridge ready; source=" + source.name() + "; clients=" + ble.subscriberCount());
     }
@@ -142,7 +135,6 @@ public final class BridgeService extends Service implements PowerSource.Listener
         unregisterReceiver(bluetoothStateReceiver);
         if (source != null) source.stop();
         if (ble != null) ble.stop();
-        if (usbBle != null) usbBle.stop();
         status = "Stopped";
         super.onDestroy();
     }
@@ -150,11 +142,6 @@ public final class BridgeService extends Service implements PowerSource.Listener
     private void ensureBle() {
         String bleStatus = ble.start();
         setStatus(bleStatus);
-    }
-
-    private void publish(PowerSample sample) {
-        ble.publish(sample);
-        if (usbBle != null) usbBle.publish(sample);
     }
 
     private String sourceName() {
@@ -170,7 +157,7 @@ public final class BridgeService extends Service implements PowerSource.Listener
             } else if (state == BluetoothAdapter.STATE_OFF) {
                 ble.stop();
                 bleState = "Bluetooth is off";
-                setStatus("Waiting for Android Bluetooth; USB path remains available; source="
+                setStatus("Waiting for Android Bluetooth; source="
                         + sourceName());
             }
         }
@@ -180,10 +167,7 @@ public final class BridgeService extends Service implements PowerSource.Listener
         @Override
         public void run() {
             long now = SystemClock.elapsedRealtime();
-            if (workoutState != WorkoutGate.State.ACTIVE) {
-                // Preserve the USB heartbeat while Android BLE measurements are idle.
-                if (usbBle != null) usbBle.publish(new PowerSample(0, 0, 0, now));
-            } else if (lastSampleAt > 0
+            if (workoutState == WorkoutGate.State.ACTIVE && lastSampleAt > 0
                     && now - lastSampleAt >= 30_000L) {
                 onSample(new PowerSample(0, now));
             }
