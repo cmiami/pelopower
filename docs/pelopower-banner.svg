@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 208" role="img" aria-labelledby="title desc">
+  <title id="title">PeloPower</title>
+  <desc id="desc">Power and cadence over Bluetooth. A crank turns against a dark blue field.</desc>
+  <rect width="960" height="208" rx="16" fill="#102634"/>
+  <g fill="none" stroke="#295062" stroke-width="2">
+    <circle cx="791" cy="104" r="146"/><circle cx="791" cy="104" r="121"/><circle cx="791" cy="104" r="97"/>
+  </g>
+  <g fill="none" stroke-linecap="round">
+    <circle cx="791" cy="104" r="69" stroke="#4c7181" stroke-width="9"/>
+    <path d="M729 134a69 69 0 0 1 102-86" stroke="#69e1b2" stroke-width="9"/>
+    <path d="m746 148 90-88m-102 88h24m66-88h24" stroke="#f2f6f1" stroke-width="9"/>
+    <circle cx="791" cy="104" r="8" fill="#102634" stroke="#69e1b2" stroke-width="5"/>
+  </g>
+  <g font-family="Arial, Helvetica, sans-serif">
+    <text x="49" y="108" fill="#f2f6f1" font-size="64" font-weight="700">PeloPower</text>
+    <text x="52" y="149" fill="#8ce8c6" font-size="23">Power and cadence over Bluetooth</text>
+  </g>
+</svg>

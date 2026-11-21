@@ -17,7 +17,7 @@ public final class CyclingPowerMeasurement {
                 .putShort((short) 0x0030)
                 .putShort(bounded)
                 .putInt((int) wheel.cumulativeRevolutions())
-                .putShort((short) wheel.lastEventTime1024())
+                .putShort((short) (wheel.lastEventTime1024() * 2))
                 .putShort((short) cadence.cumulativeRevolutions())
                 .putShort((short) cadence.lastEventTime1024())
                 .array();

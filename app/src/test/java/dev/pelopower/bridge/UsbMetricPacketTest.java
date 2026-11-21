@@ -29,6 +29,6 @@ public final class UsbMetricPacketTest {
                 Arrays.copyOfRange(packet, 19, 30));
         int expectedCrc = (packet[30] & 0xff) | ((packet[31] & 0xff) << 8);
         assertEquals(expectedCrc, UsbMetricPacket.crc16Ccitt(packet, 0, 30));
-        assertEquals(0x4520, expectedCrc);
+        assertEquals(0x4218, expectedCrc);
     }
 }

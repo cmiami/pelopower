@@ -2,16 +2,22 @@ import AppKit
 import CoreBluetooth
 import Foundation
 
-final class Scanner: NSObject, NSApplicationDelegate, CBCentralManagerDelegate {
+final class Scanner: NSObject, NSApplicationDelegate, CBCentralManagerDelegate, CBPeripheralDelegate {
     private let output = URL(fileURLWithPath: "/tmp/pelopower-ble-scan.txt")
     private var central: CBCentralManager!
+    private var target: CBPeripheral?
+    private var connectScheduled = false
     private var discoveries = 0
     private var matches = 0
+    private var notifications = 0
+    private let scanOnly = ProcessInfo.processInfo.environment["PELOPOWER_SCAN_ONLY"] == "1"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         try? "PeloPower BLE scan starting\n".write(to: output, atomically: true, encoding: .utf8)
         central = CBCentralManager(delegate: self, queue: nil)
-        Timer.scheduledTimer(withTimeInterval: 20, repeats: false) { [weak self] _ in
+        let duration = Double(ProcessInfo.processInfo.environment["PELOPOWER_SCAN_SECONDS"] ?? "20")
+            ?? 20
+        Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { [weak self] _ in
             self?.finish()
         }
     }
@@ -51,7 +57,101 @@ final class Scanner: NSObject, NSApplicationDelegate, CBCentralManagerDelegate {
             || hasPeloPowerMarker
         if isMatch {
             matches += 1
-            append("MATCH name=\(name) rssi=\(RSSI) services=\(services) manufacturer=\(manufacturerHex)")
+            append("MATCH id=\(peripheral.identifier) name=\(name) rssi=\(RSSI) services=\(services) manufacturer=\(manufacturerHex)")
+            if !scanOnly && target == nil && services.contains(CBUUID(string: "1818")) {
+                target = peripheral
+                peripheral.delegate = self
+            }
+            if target != nil && !connectScheduled {
+                connectScheduled = true
+                // Allow the active scanner to receive the companion advertisement and scan
+                // response before connecting to one of the two dedicated sensor advertisements.
+                Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { [weak self] _ in
+                    guard let self, let target = self.target else { return }
+                    self.central.stopScan()
+                    self.append("CONNECTING id=\(target.identifier)")
+                    self.central.connect(target)
+                }
+            }
+        }
+    }
+
+    func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        append("CONNECTED name=\(peripheral.name ?? "unnamed")")
+        peripheral.discoverServices(nil)
+    }
+
+    func centralManager(
+        _ central: CBCentralManager,
+        didFailToConnect peripheral: CBPeripheral,
+        error: Error?
+    ) {
+        append("CONNECT FAILED error=\(String(describing: error))")
+    }
+
+    func centralManager(
+        _ central: CBCentralManager,
+        didDisconnectPeripheral peripheral: CBPeripheral,
+        error: Error?
+    ) {
+        append("DISCONNECTED error=\(String(describing: error))")
+    }
+
+    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        if let error {
+            append("SERVICE DISCOVERY FAILED error=\(error)")
+            return
+        }
+        for service in peripheral.services ?? [] {
+            append("SERVICE uuid=\(service.uuid)")
+            if service.uuid == CBUUID(string: "1818")
+                || service.uuid == CBUUID(string: "1816")
+                || service.uuid == CBUUID(string: "180A") {
+                peripheral.discoverCharacteristics(nil, for: service)
+            }
+        }
+    }
+
+    func peripheral(
+        _ peripheral: CBPeripheral,
+        didDiscoverCharacteristicsFor service: CBService,
+        error: Error?
+    ) {
+        if let error {
+            append("CHARACTERISTIC DISCOVERY FAILED service=\(service.uuid) error=\(error)")
+            return
+        }
+        for characteristic in service.characteristics ?? [] {
+            append("CHARACTERISTIC service=\(service.uuid) uuid=\(characteristic.uuid) properties=\(characteristic.properties.rawValue)")
+            if characteristic.properties.contains(.read) {
+                peripheral.readValue(for: characteristic)
+            }
+            if characteristic.properties.contains(.notify) {
+                peripheral.setNotifyValue(true, for: characteristic)
+            }
+        }
+    }
+
+    func peripheral(
+        _ peripheral: CBPeripheral,
+        didUpdateNotificationStateFor characteristic: CBCharacteristic,
+        error: Error?
+    ) {
+        append("SUBSCRIPTION uuid=\(characteristic.uuid) active=\(characteristic.isNotifying) error=\(String(describing: error))")
+    }
+
+    func peripheral(
+        _ peripheral: CBPeripheral,
+        didUpdateValueFor characteristic: CBCharacteristic,
+        error: Error?
+    ) {
+        let bytes = characteristic.value ?? Data()
+        let hex = bytes.map { String(format: "%02x", $0) }.joined()
+        if characteristic.isNotifying {
+            notifications += 1
+            append("NOTIFICATION uuid=\(characteristic.uuid) value=\(hex)")
+        } else {
+            append("READ uuid=\(characteristic.uuid) value=\(hex)")
         }
     }
 
@@ -68,8 +168,15 @@ final class Scanner: NSObject, NSApplicationDelegate, CBCentralManagerDelegate {
 
     private func finish() {
         central?.stopScan()
-        append("Finished discoveries=\(discoveries) matches=\(matches)")
-        NSApplication.shared.terminate(nil)
+        append("Finished discoveries=\(discoveries) matches=\(matches) notifications=\(notifications)")
+        if let target {
+            central?.cancelPeripheralConnection(target)
+            Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { _ in
+                NSApplication.shared.terminate(nil)
+            }
+        } else {
+            NSApplication.shared.terminate(nil)
+        }
     }
 }
 

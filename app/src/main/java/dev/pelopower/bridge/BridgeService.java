@@ -39,6 +39,7 @@ public final class BridgeService extends Service implements PowerSource.Listener
     private CyclingPowerGattServer ble;
     private UsbBleBridge usbBle;
     private long lastSampleAt;
+    private long lastMetricsLoggedAt;
 
     public static String statusLine() {
         return status + "\nAndroid BLE: " + bleState + "\nUSB BLE: " + usbState
@@ -56,6 +57,7 @@ public final class BridgeService extends Service implements PowerSource.Listener
             bleState = newState;
             setStatus(newState + "; source=" + (source == null ? "starting" : source.name()));
         });
+        workoutState = gate.state();
         ensureBle();
         usbBle = new UsbBleBridge(this, newState -> {
             usbState = newState;
@@ -66,7 +68,7 @@ public final class BridgeService extends Service implements PowerSource.Listener
         source.start(this);
         IntentFilter bluetoothFilter = new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED);
         if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(bluetoothStateReceiver, bluetoothFilter, Context.RECEIVER_NOT_EXPORTED);
+            registerReceiver(bluetoothStateReceiver, bluetoothFilter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(bluetoothStateReceiver, bluetoothFilter);
         }
@@ -101,7 +103,20 @@ public final class BridgeService extends Service implements PowerSource.Listener
         lastWatts = sample.watts();
         lastCadence = sample.cadenceRpm();
         lastSpeedCentiKph = sample.speedCentiKph();
-        if (workoutState == WorkoutGate.State.ACTIVE) publish(sample);
+        if (sample.monotonicMillis() - lastMetricsLoggedAt >= 3_000L) {
+            lastMetricsLoggedAt = sample.monotonicMillis();
+            Log.i(TAG, "Metrics power=" + sample.watts()
+                    + "W cadence=" + sample.cadenceRpm()
+                    + "rpm speed=" + String.format(
+                            java.util.Locale.US, "%.2f", sample.speedCentiKph() / 100.0)
+                    + "km/h clients=" + ble.subscriberCount());
+        }
+        if (workoutState == WorkoutGate.State.ACTIVE) {
+            if (previous == WorkoutGate.State.WAITING) {
+                ble.beginWorkout(sample.monotonicMillis());
+            }
+            publish(sample);
+        }
         if (previous == WorkoutGate.State.ACTIVE && workoutState == WorkoutGate.State.WAITING) {
             publish(new PowerSample(0, 0, 0, sample.monotonicMillis()));
         }
@@ -153,6 +168,7 @@ public final class BridgeService extends Service implements PowerSource.Listener
             if (state == BluetoothAdapter.STATE_ON) {
                 ensureBle();
             } else if (state == BluetoothAdapter.STATE_OFF) {
+                ble.stop();
                 bleState = "Bluetooth is off";
                 setStatus("Waiting for Android Bluetooth; USB path remains available; source="
                         + sourceName());
@@ -165,8 +181,8 @@ public final class BridgeService extends Service implements PowerSource.Listener
         public void run() {
             long now = SystemClock.elapsedRealtime();
             if (workoutState != WorkoutGate.State.ACTIVE) {
-                // Keep connected receivers alive and explicitly report an idle sensor.
-                publish(new PowerSample(0, 0, 0, now));
+                // Preserve the USB heartbeat while Android BLE measurements are idle.
+                if (usbBle != null) usbBle.publish(new PowerSample(0, 0, 0, now));
             } else if (lastSampleAt > 0
                     && now - lastSampleAt >= 30_000L) {
                 onSample(new PowerSample(0, now));

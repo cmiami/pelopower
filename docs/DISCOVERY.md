@@ -8,9 +8,9 @@ change the private interface.
 The G700 internal radio is confirmed to transmit. An iPhone running nRF Connect detects
 `PLTN-RTR01`, connects, and discovers Cycling Power (`0x1818`) and Cycling Speed and Cadence
 (`0x1816`). Earlier Mac scans were performed out of range and are not evidence of an RF blocker.
-An epix Pro (Gen 2), however, has not listed the peripheral in native sensor search. Do not use
-pedaling or workout state as a discovery diagnostic: advertising starts before either one and idle
-receivers are sent zero-valued measurements once connected.
+The initial epix Pro (Gen 2) search did not show a sensor. In the subsequent 1.3.1 headless
+test, a Garmin connected and subscribed with the public-address advertiser running. See the
+[Garmin pairing steps](../README.md#pair-a-garmin) to reproduce the setup.
 
 An untouched build of doudar Grupetto v0.0.37 was also run as a control. Its source uses the same
 Android advertiser API and places service UUIDs in the primary advertisement and the device name in
@@ -23,9 +23,8 @@ controller completions for Extended Advertising Parameters (`0x2036`), Data (`0x
 Response (`0x2038`), and Enable (`0x2039`). Inspection of the exact G700 Bluetooth serializer also
 shows that the app-facing `AdvertiseData` path has no field for the Cycling Power Sensor Appearance
 AD type (`0x19`). The Bluetooth Cycling Power Profile requires that appearance in advertising data
-or scan response, making it the leading explanation for Garmin filtering the peripheral before a
-GATT connection. The current APK additionally puts the local name in the primary packet and exposes
-Device Information so those independently testable compatibility variables can be ruled out.
+or scan response. The successful public-address test used a Cycling Power UUID in the primary
+packet and the local name in the scan response.
 
 The hardware fallback sends the already-encoded CPS/CSCS measurements over Android USB host mode to
 the checked-in nRF52840 firmware. The dongle advertises the complete profile, including Appearance,

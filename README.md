@@ -1,56 +1,69 @@
+![PeloPower — Power and cadence over Bluetooth](docs/pelopower-banner.svg)
+
 # PeloPower
 
-> [!WARNING]
-> **Proof of concept — external-radio hardware path not yet validated.** The Android APK and
-> nRF52840 firmware build successfully, and the APK has been exercised on a G700 Peloton, but the
-> USB dongle-to-Garmin path has not been tested with physical hardware yet. Treat all packaged
-> artifacts as prerelease software until an nRF52840 Dongle and Garmin complete an over-the-air
-> power/cadence/speed validation.
+Ride with the Peloton screen you already use and record watts and cadence together on Garmin.
+PeloPower reads the bike’s sensors in the background and sends both measurements through one
+Bluetooth Power sensor pairing. The tested setup used a G700 Cross Training Bike+, Android 13,
+Affernet 3.4.1, and the bike’s built-in radio.
 
-PeloPower is a minimal Android BLE power, cadence, and speed bridge for Peloton bikes. It runs on
-the Peloton tablet, reads the local sensor service, and exposes standard Bluetooth Cycling Power
-and Cycling Speed and Cadence services to Garmin, Zwift, and other BLE receivers.
+**[Download the headless APK](https://github.com/cmiami/pelopower/releases/latest/download/pelopower-headless.apk)** · [Releases and checksums](https://github.com/cmiami/pelopower/releases) · [Garmin pairing](#pair-a-garmin)
 
-Current status: metric decoding and both BLE GATT services are validated on a G700 Cross Training
-Bike+ running Android 13, Affernet 2.4.508, and tablet build TA.260520.D. An iPhone running nRF
-Connect detects `PLTN-RTR01`, connects, and discovers the Cycling Power and Cycling Speed and
-Cadence services, proving that the tablet's internal BLE radio is transmitting. A Garmin epix Pro
-(Gen 2) does not yet list it in native sensor search. The Android build now provides the required
-CSC control point, Device Information, a concrete sensor location, and the local name in the
-primary advertisement; that compatibility revision still needs a Garmin retest. The remaining
-known profile gap is the Cycling Power Sensor Appearance field: the Bluetooth profile requires it
-in advertising or scan-response data, while Android's application advertising API on this image
-does not expose that AD type. PeloPower 1.1 also includes a direct nRF52840 USB-radio path capable
-of emitting the complete raw advertisement, but that hardware path remains untested.
+## Install on the bike
 
-## What already exists
+Use a computer with Android SDK Platform Tools (`adb`) and an authorized USB or wireless
+debugging connection to the tablet. For wireless pairing on Android 13, see the
+[ADB connection steps](docs/DISCOVERY.md#1-establish-adb-access).
 
-This is not a greenfield idea:
+1. Download **pelopower-headless.apk** and **install-headless.sh** from the [latest release](https://github.com/cmiami/pelopower/releases/latest) into the same directory.
+2. Open Bash in that directory and run the following commands. The bike should appear as `device` in the first command’s output.
 
-- [QZ / qdomyos-zwift](https://github.com/cagnulein/qdomyos-zwift) is GPL-3.0, implements virtual
-  fitness devices, and its 2026-07-15 nightly publishes a Bike+ build using a Grupetto backend. It
-  is a broad app rather than a tiny appliance.
-- [Grupetto](https://github.com/selalipop/grupetto) reverse-engineered the Peloton internal sensor
-  service and displays live Bike/Bike+ metrics. The active
-  [doudar fork](https://github.com/doudar/grupetto/releases/tag/v0.0.37) now detects `PLTN-ATR` and
-  G700 Cross Trainer model strings and includes CPS, CSCS, and FTMS broadcasting. This is the first
-  implementation to test on the target bike. Those changes remain in an unmerged pull request,
-  current issue reports include BLE discovery/dropout failures, and neither Grupetto repository
-  currently declares a license, so PeloPower does not copy its source.
-- [OpenPelo](https://github.com/doudar/Openpelo) is an actively maintained ADB installer/device
-  manager and is the easiest current sideload route.
-- DFC and FitSwitch are hardware bridges. DFC targets the original Bike wiring; FitSwitch is a
-  current commercial Bike/Bike+ solution with BLE, ANT+, FTMS, and control features.
+   ```bash
+   adb devices -l
+   bash install-headless.sh ./pelopower-headless.apk
+   ```
 
-The reason for this project is narrower: independently validate the new 2025 Cross Training Bike+
-contract and produce a very small boot-starting CPS/CSCS broadcaster with no cloud, account,
-overlay, workout storage, FTMS control, or analytics. If the doudar Grupetto release is stable on
-the bike and Garmin, extending it may be less work; PeloPower remains useful as a minimal fallback.
+   If ADB lists multiple devices, set `ADB_SERIAL` to the bike’s serial or connection endpoint before running the installer.
+3. The installer grants Bluetooth permissions and starts the service. The headless APK has no launcher icon and starts again when Android boots.
+
+## Releases
+
+| Download | Use |
+| --- | --- |
+| [Headless APK](https://github.com/cmiami/pelopower/releases/latest/download/pelopower-headless.apk) | Install on the Peloton tablet. |
+| [Installer](https://github.com/cmiami/pelopower/releases/latest/download/install-headless.sh) | Run on the computer connected to the bike. |
+| [Public-address advertiser](https://github.com/cmiami/pelopower/releases/latest/download/public-cps-probe.jar) | Optional pairing helper used in the successful Garmin test. |
+
+## Pair a Garmin
+
+1. [Install the headless APK](#install-on-the-bike). It starts automatically after installation and boot.
+2. On the Garmin, open **Sensors & Accessories → Add New → Power** and select **PeloPower**.
+3. If the watch cannot find or pair with the sensor, start the [public-address advertiser](tools/android-public-advertiser/README.md) through ADB and repeat the search. This helper was running during the successful G700 test.
+4. Start an Indoor Bike activity with power and cadence data fields and pedal. Both readings share the same subscription.
+
+The APK stays discoverable between rides and pauses measurement notifications after 30 seconds
+without movement. The helper runs until the tablet reboots or its process stops. Reconnection
+after reboot using the APK alone still needs testing. If the tablet only dims when idle, check
+**Developer options → Stay awake**. Turning that setting off allowed the tested tablet's configured
+display timeout to apply.
+
+
+
+
+## How the ride reaches your watch
+
+```mermaid
+flowchart LR
+    A["Peloton sensor service"] --> B["Headless APK"]
+    B -->|"Cycling Power · 0x2A63"| C["Garmin Power sensor"]
+    C --> D["Watts"]
+    C --> E["Cadence"]
+```
 
 ## Repository shape
 
 - `CyclingPowerGattServer`: dependency-free Android GATT server advertising Cycling Power Service
-  `0x1818` and Cycling Speed and Cadence Service `0x1816`. Cadence and speed are present as crank
+  `0x1818` and exposing Cycling Speed and Cadence Service `0x1816`. Cadence and speed are present as crank
   and wheel revolution data in both profiles for broad receiver compatibility.
 - `UsbBleBridge`: direct Android USB-host transport for the external nRF52840 BLE radio. It runs in
   parallel with the built-in-radio path, so one APK works on affected and unaffected bikes.
@@ -151,19 +164,13 @@ the dongle.
 
 ## BLE behavior
 
-The service advertises continuously at a fast interval and high transmit-power setting so a Garmin
-or other receiver can be paired before a workout. The bike is mains-powered, so advertising is not
-throttled for battery life. A connected receiver gets zero power/cadence/speed once per second while
-the bike is idle; live values replace those zeros as soon as movement is detected. The bridge also
-re-registers its GATT services automatically if the tablet's Bluetooth radio is toggled.
+The headless APK advertises a single Cycling Power sensor at a balanced interval, including
+while idle for pairing. Pair it as a Power sensor to receive watts and crank cadence together.
+The separate CSC service is available after connection. Android BLE measurements pause
+between workouts. The bridge requests no display wake lock and uses the tablet's display timeout.
 Once the power source produces three moving samples (about 400 ms on Bike+/G700), it notifies
 instantaneous power, cadence, and virtual-wheel speed; after 30 seconds without movement it sends
 a final zero measurement and returns to waiting.
-
-Advertising does not depend on pedaling or on a Peloton workout. A receiver that cannot discover
-the service while the bike is idle will not be fixed by starting a workout. On G700 build
-TA.260520.D, the internal advertisement and GATT services are visible in nRF Connect, but native
-Garmin pairing is not yet validated; see the discovery runbook for the current evidence.
 
 Power, cadence, and speed are in scope. FTMS, ERG/SIM control, ANT+, ride recording, and resistance
 writes remain out of scope for this small sensor bridge.

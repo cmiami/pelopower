@@ -11,7 +11,7 @@ public final class CyclingPowerMeasurementTest {
         CadenceTracker.State cadence = new CadenceTracker.State(42, 0x1234);
         assertArrayEquals(new byte[] {
                         0x30, 0, (byte) 0xFA, 0,
-                        0x04, 0x03, 0x02, 0x01, 0x78, 0x56,
+                        0x04, 0x03, 0x02, 0x01, (byte) 0xf0, (byte) 0xac,
                         42, 0, 0x34, 0x12},
                 CyclingPowerMeasurement.metrics(250, wheel, cadence));
     }
