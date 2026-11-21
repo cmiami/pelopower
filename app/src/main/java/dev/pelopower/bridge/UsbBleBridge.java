@@ -25,7 +25,7 @@ public final class UsbBleBridge {
         void onUsbStatus(String status);
     }
 
-    // Private prototype identity used by firmware/nrf52840-dongle/prj.conf.
+    // Private prototype identity used by deprecated/nrf52840-dongle/prj.conf.
     public static final int USB_VENDOR_ID = 0x1915;
     public static final int USB_PRODUCT_ID = 0x521f;
     private static final String ACTION_USB_PERMISSION =

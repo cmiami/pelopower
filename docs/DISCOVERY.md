@@ -26,12 +26,6 @@ AD type (`0x19`). The Bluetooth Cycling Power Profile requires that appearance i
 or scan response. The successful public-address test used a Cycling Power UUID in the primary
 packet and the local name in the scan response.
 
-The hardware fallback sends the already-encoded CPS/CSCS measurements over Android USB host mode to
-the checked-in nRF52840 firmware. The dongle advertises the complete profile, including Appearance,
-on its own controller and antenna. The G700 advertises `android.hardware.usb.host`, exposes xHCI host
-buses, and makes USB endpoints available through `UsbManager`; the remaining acceptance step is a
-physical dongle/Garmin test.
-
 ## 1. Establish ADB access
 
 On the Bike+, open Device Settings, enable developer options by tapping Build number seven times,

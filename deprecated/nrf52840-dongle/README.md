@@ -1,4 +1,6 @@
-# PeloPower nRF52840 USB BLE radio
+# Deprecated · nRF52840 USB BLE radio
+
+Archived hardware experiment. The firmware builds, but end-to-end transmission with a physical dongle and Garmin was never validated. The [current setup](../../README.md#pair-a-garmin) uses the tablet’s built-in Bluetooth radio.
 
 This firmware turns a Nordic nRF52840 Dongle (`PCA10059`) into a self-contained Bluetooth
 Cycling Power and Cycling Speed/Cadence sensor. The Android APK sends 32-byte metric packets over
@@ -10,7 +12,7 @@ notifications. It does not use the Peloton's MediaTek Bluetooth path.
 Use Zephyr 4.4.0 and its ARM toolchain:
 
 ```sh
-west build -p always -b nrf52840dongle/nrf52840 firmware/nrf52840-dongle
+west build -p always -b nrf52840dongle/nrf52840 deprecated/nrf52840-dongle
 ```
 
 The output to program is `build/zephyr/zephyr.hex`. The normal board target preserves Nordic's
