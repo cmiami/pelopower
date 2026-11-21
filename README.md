@@ -11,20 +11,44 @@ Affernet 3.4.1, and the bike’s built-in radio.
 
 ## Install on the bike
 
-Use a computer with Android SDK Platform Tools (`adb`) and an authorized USB or wireless
-debugging connection to the tablet. For wireless pairing on Android 13, see the
-[ADB connection steps](docs/DISCOVERY.md#1-establish-adb-access).
+These steps use Wi-Fi on the Android 13 Bike+. Connect the bike and computer to the **same Wi-Fi network**.
 
-1. Download **pelopower-headless.apk** and **install-headless.sh** from the [latest release](https://github.com/cmiami/pelopower/releases/latest) into the same directory.
-2. Open Bash in that directory and run the following commands. The bike should appear as `device` in the first command’s output.
+**On the computer**
+
+1. Download and unzip [Android SDK Platform Tools](https://developer.android.com/tools/releases/platform-tools) for your computer. Put the [APK](https://github.com/cmiami/pelopower/releases/latest/download/pelopower-headless.apk) and [install script](https://github.com/cmiami/pelopower/releases/latest/download/install-headless.sh) inside the extracted `platform-tools` folder, alongside `adb` or `adb.exe`.
+2. Open a terminal in that folder (use **Git Bash** on Windows). Run these two lines and keep the terminal open. You should see an Android Debug Bridge version.
 
    ```bash
-   adb devices -l
+   export PATH="$PWD:$PATH"
+   adb version
+   ```
+
+**On the bike**
+
+3. Open the Peloton **Settings** menu → **Device Settings** → **About tablet** (on some builds, **System → About tablet**). Tap **Build number** seven times until Android confirms developer mode.
+4. Go back to **Device Settings → System → Developer options**. Turn on **Wireless debugging** and tap **Allow** if prompted for this network. Then tap the **words “Wireless debugging”** to open its settings page.
+5. Tap **Pair device with pairing code**. Leave the dialog open. It displays a **six-digit code** and an **IP address with a pairing port**.
+
+**Back on the computer**
+
+6. Run the command below using the address and port **from the pairing dialog** in place of the example. At the prompt, type the six-digit code and press Enter. Wait for `Successfully paired`.
+
+   ```bash
+   adb pair 192.168.1.50:37001
+   ```
+
+7. On the bike, return to the main **Wireless debugging** page. Read **IP address & port** there. This is the **connection port**. Replace the example address below with that value, then run all four lines in the same terminal.
+
+   ```bash
+   export ADB_SERIAL=192.168.1.50:41002
+   adb connect "$ADB_SERIAL"
+   adb -s "$ADB_SERIAL" get-state
    bash install-headless.sh ./pelopower-headless.apk
    ```
 
-   If ADB lists multiple devices, set `ADB_SERIAL` to the bike’s serial or connection endpoint before running the installer.
-3. The installer grants Bluetooth permissions and starts the service. The headless APK has no launcher icon and starts again when Android boots.
+   The state check should print `device`. The installer prints `Success`, grants Bluetooth permissions, and starts PeloPower. There’s no app icon to open. Continue to [Pair a Garmin](#pair-a-garmin).
+
+If the code expires, reopen **Pair device with pairing code** and repeat step 6 with the new values. If the connection is refused after pairing, reread **IP address & port** on the main Wireless debugging page and repeat step 7.
 
 ## Releases
 
@@ -47,18 +71,9 @@ after reboot using the APK alone still needs testing. If the tablet only dims wh
 **Developer options → Stay awake**. Turning that setting off allowed the tested tablet's configured
 display timeout to apply.
 
-
-
-
 ## How the ride reaches your watch
 
-```mermaid
-flowchart LR
-    A["Peloton sensor service"] --> B["Headless APK"]
-    B -->|"Cycling Power · 0x2A63"| C["Garmin Power sensor"]
-    C --> D["Watts"]
-    C --> E["Cadence"]
-```
+![Peloton sensors feed PeloPower, which sends watts and cadence to Garmin over Bluetooth](docs/ride-path.svg)
 
 ## Repository shape
 
