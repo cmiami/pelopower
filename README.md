@@ -181,6 +181,30 @@ to that wheel size (manual rather than automatic calibration) so its derived spe
 The BikeData contract exposes centiwatts and RPM. PeloPower derives Peloton-style speed from power
 using the established display curve and converts it to cumulative wheel revolutions for BLE.
 
+## What already exists
+
+This is not a greenfield idea:
+
+- [QZ / qdomyos-zwift](https://github.com/cagnulein/qdomyos-zwift) is GPL-3.0, implements virtual
+  fitness devices, and its 2026-07-15 nightly publishes a Bike+ build using a Grupetto backend. It
+  is a broad app rather than a tiny appliance.
+- [Grupetto](https://github.com/selalipop/grupetto) reverse-engineered the Peloton internal sensor
+  service and displays live Bike/Bike+ metrics. The active
+  [doudar fork](https://github.com/doudar/grupetto/releases/tag/v0.0.37) now detects `PLTN-ATR` and
+  G700 Cross Trainer model strings and includes CPS, CSCS, and FTMS broadcasting. This is the first
+  implementation to test on the target bike. Those changes remain in an unmerged pull request,
+  current issue reports include BLE discovery/dropout failures, and neither Grupetto repository
+  currently declares a license, so PeloPower does not copy its source.
+- [OpenPelo](https://github.com/doudar/Openpelo) is an actively maintained ADB installer/device
+  manager and is the easiest current sideload route.
+- DFC and FitSwitch are hardware bridges. DFC targets the original Bike wiring; FitSwitch is a
+  current commercial Bike/Bike+ solution with BLE, ANT+, FTMS, and control features.
+
+The reason for this project is narrower: independently validate the new 2025 Cross Training Bike+
+contract and produce a very small boot-starting CPS/CSCS broadcaster with no cloud, account,
+overlay, workout storage, FTMS control, or analytics. If the doudar Grupetto release is stable on
+the bike and Garmin, extending it may be less work; PeloPower remains useful as a minimal fallback.
+
 ## Safety and support boundary
 
 This project is unaffiliated with Peloton and depends on undocumented interfaces that an OTA update
