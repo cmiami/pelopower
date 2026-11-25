@@ -12,7 +12,9 @@ from the download directory. If several devices appear in `adb devices`, set `AN
 to the bike’s connection endpoint.
 
 ```sh
-adb push public-cps-probe.jar /data/local/tmp/public-cps-probe.jar
+adb push public-cps-probe.jar /data/local/tmp/public-cps-probe.next.jar
+adb shell 'ps -A -o PID,ARGS | while read -r pid args; do if [ "$args" = "app_process / dev.pelopower.bridge.tools.PublicAddressAdvertiser" ]; then kill "$pid"; fi; done'
+adb shell mv /data/local/tmp/public-cps-probe.next.jar /data/local/tmp/public-cps-probe.jar
 adb shell 'CLASSPATH=/data/local/tmp/public-cps-probe.jar nohup app_process / dev.pelopower.bridge.tools.PublicAddressAdvertiser >/data/local/tmp/public-cps-probe.log 2>&1 </dev/null &'
 adb shell cat /data/local/tmp/public-cps-probe.log
 ```
@@ -22,7 +24,7 @@ again. Search for a Power sensor on the watch. If a confirmation number appears 
 check that the numbers match before confirming.
 
 The helper uses an address-selection API available to the ADB shell on the tested Android image.
-Its process exits on reboot. If discovery needs the helper again, rerun the final two commands
+After a Bluetooth off/on cycle it requests a new advertising set automatically. It also checks that the controller still answers for its set every 30 seconds. Its process exits on a full tablet reboot. If discovery needs the helper again, rerun the final two commands
 using the JAR already on the bike.
 
 ### Build the helper from source

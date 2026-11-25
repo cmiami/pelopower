@@ -66,7 +66,7 @@ If the code expires, reopen **Pair device with pairing code** and repeat step 6 
 4. Start an Indoor Bike activity with power and cadence data fields and pedal. Both readings share the same subscription.
 
 The APK stays discoverable between rides and pauses measurement notifications after 30 seconds
-without movement. The helper runs until the tablet reboots or its process stops. Reconnection
+without movement. The updated helper resumes advertising after Bluetooth turns off and back on. It runs until the tablet reboots or its process stops. Reconnection
 after reboot using the APK alone still needs testing. If the tablet only dims when idle, check
 **Developer options → Stay awake**. Turning that setting off allowed the tested tablet's configured
 display timeout to apply.

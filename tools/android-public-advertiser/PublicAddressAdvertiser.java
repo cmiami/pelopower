@@ -7,6 +7,7 @@ import android.bluetooth.le.AdvertisingSet;
 import android.bluetooth.le.AdvertisingSetCallback;
 import android.bluetooth.le.AdvertisingSetParameters;
 import android.bluetooth.le.BluetoothLeAdvertiser;
+import android.os.Handler;
 import android.os.Looper;
 import android.os.ParcelUuid;
 import android.util.Log;
@@ -26,7 +27,20 @@ public final class PublicAddressAdvertiser {
     private static final ParcelUuid CPS = new ParcelUuid(
             UUID.fromString("00001818-0000-1000-8000-00805f9b34fb"));
 
-    private PublicAddressAdvertiser() {}
+    private final BluetoothAdapter adapter;
+    private final AdvertisingSetParameters parameters;
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private BluetoothLeAdvertiser advertiser;
+    private PowerCallback current;
+    private AdvertisingSet activeSet;
+    private final Runnable checkSet = this::requestAddress;
+    private final Runnable retry = this::startIfEnabled;
+    private final Runnable timeout = () -> retryAfterFailure("Controller callback timed out");
+
+    private PublicAddressAdvertiser(BluetoothAdapter adapter) throws ReflectiveOperationException {
+        this.adapter = adapter;
+        parameters = parametersWithAddressType(ADDRESS_TYPE_PUBLIC);
+    }
 
     public static void main(String[] args) throws Exception {
         Looper.prepareMainLooper();
@@ -49,35 +63,69 @@ public final class PublicAddressAdvertiser {
         Context context = (Context) getSystemContext.invoke(activityThread);
         BluetoothManager manager = context.getSystemService(BluetoothManager.class);
         BluetoothAdapter adapter = manager == null ? null : manager.getAdapter();
-        if (adapter == null || !adapter.isEnabled()) {
-            throw new IllegalStateException("Bluetooth adapter unavailable or disabled");
-        }
-        BluetoothLeAdvertiser advertiser = adapter.getBluetoothLeAdvertiser();
-        if (advertiser == null) {
-            throw new IllegalStateException("BLE advertiser unavailable");
-        }
-
-        AdvertisingSetParameters powerParameters = parametersWithAddressType(
-                ADDRESS_TYPE_PUBLIC);
-        System.out.println("Public Power own-address type selected");
-
-        AdvertiseData powerData = new AdvertiseData.Builder()
-                .addServiceUuid(CPS)
-                .build();
-        AdvertiseData scanResponse = new AdvertiseData.Builder()
-                .setIncludeDeviceName(true)
-                .build();
-        advertiser.startAdvertisingSet(
-                powerParameters,
-                powerData,
-                scanResponse,
-                null,
-                null,
-                powerCallback);
-        System.out.println("Public CPS advertiser requested; "
-                + "waiting for controller callbacks");
-        Log.i(TAG, "Requested public-address CPS advertisement");
+        if (adapter == null) throw new IllegalStateException("No Bluetooth adapter");
+        PublicAddressAdvertiser helper = new PublicAddressAdvertiser(adapter);
+        helper.checkRadio.run();
         Looper.loop();
+    }
+
+    // A shell app_process has no registered Android application to receive adapter broadcasts.
+    // Observe radio transitions and recheck the controller even if a fast reset fell between polls.
+    private int previousState = BluetoothAdapter.ERROR;
+    private final Runnable checkRadio = new Runnable() {
+        @Override
+        public void run() {
+            int state = adapter.getState();
+            if (state != previousState) {
+                System.out.println("Bluetooth state=" + state);
+                previousState = state;
+                if (state == BluetoothAdapter.STATE_ON) startIfEnabled();
+                else reset();
+            }
+            handler.postDelayed(this, 1000);
+        }
+    };
+
+    private void startIfEnabled() {
+        if (current != null || !adapter.isEnabled()) return;
+        handler.removeCallbacks(retry);
+        try {
+            advertiser = adapter.getBluetoothLeAdvertiser();
+            if (advertiser == null) {
+                retryAfterFailure("BLE advertiser unavailable");
+                return;
+            }
+            current = new PowerCallback();
+            advertiser.startAdvertisingSet(parameters, new AdvertiseData.Builder()
+                    .addServiceUuid(CPS).build(), new AdvertiseData.Builder()
+                    .setIncludeDeviceName(true).build(), null, null, current);
+            handler.postDelayed(timeout, 10000);
+        } catch (RuntimeException e) {
+            retryAfterFailure("Advertising startup failed: " + e);
+        }
+    }
+
+    private void reset() {
+        handler.removeCallbacks(retry);
+        handler.removeCallbacks(timeout);
+        handler.removeCallbacks(checkSet);
+        activeSet = null;
+        AdvertisingSetCallback previous = current;
+        current = null;
+        if (previous != null && advertiser != null) {
+            try {
+                advertiser.stopAdvertisingSet(previous);
+            } catch (RuntimeException e) {
+                Log.w(TAG, "Controller already unavailable", e);
+            }
+        }
+        advertiser = null;
+    }
+
+    private void retryAfterFailure(String reason) {
+        System.out.println(reason);
+        reset();
+        handler.postDelayed(retry, 3000);
     }
 
     private static AdvertisingSetParameters parametersWithAddressType(int addressType)
@@ -95,31 +143,38 @@ public final class PublicAddressAdvertiser {
         return builder.build();
     }
 
-    private static final AdvertisingSetCallback powerCallback =
-            new LoggingAdvertisingSetCallback("Cycling Power");
+    private void requestAddress() {
+        if (activeSet == null) return;
+        try {
+            Method getOwnAddress = AdvertisingSet.class.getDeclaredMethod("getOwnAddress");
+            getOwnAddress.setAccessible(true);
+            getOwnAddress.invoke(activeSet);
+            handler.postDelayed(timeout, 10000);
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            retryAfterFailure("Controller address check failed: " + e);
+        }
+    }
 
-    private static final class LoggingAdvertisingSetCallback extends AdvertisingSetCallback {
-        private final String label;
+    private final class PowerCallback extends AdvertisingSetCallback {
+        private boolean loggedAddress;
 
-        LoggingAdvertisingSetCallback(String label) {
-            this.label = label;
+        @Override
+        public void onAdvertisingSetStopped(AdvertisingSet set) {
+            if (current == this) retryAfterFailure("Advertising set stopped");
         }
 
         @Override
         public void onAdvertisingSetStarted(
                 AdvertisingSet advertisingSet, int txPower, int status) {
-            Log.i(TAG, "Public " + label + " advertiser start status=" + status
-                    + " txPower=" + txPower);
-            System.out.println("Public " + label + " advertiser start status=" + status
-                    + " txPower=" + txPower);
-            if (status != ADVERTISE_SUCCESS || advertisingSet == null) return;
-            try {
-                Method getOwnAddress = AdvertisingSet.class.getDeclaredMethod("getOwnAddress");
-                getOwnAddress.setAccessible(true);
-                getOwnAddress.invoke(advertisingSet);
-            } catch (ReflectiveOperationException e) {
-                Log.w(TAG, "Could not request advertiser address", e);
+            if (current != this) return;
+            handler.removeCallbacks(timeout);
+            System.out.println("Public CPS advertiser start status=" + status + " txPower=" + txPower);
+            if (status != ADVERTISE_SUCCESS || advertisingSet == null) {
+                retryAfterFailure("Controller rejected start");
+                return;
             }
+            activeSet = advertisingSet;
+            requestAddress();
         }
 
         // Hidden system callback paired with AdvertisingSet.getOwnAddress(). Declaring it here
@@ -127,10 +182,18 @@ public final class PublicAddressAdvertiser {
         @SuppressWarnings("unused")
         public void onOwnAddressRead(
                 AdvertisingSet advertisingSet, int addressType, String address) {
-            Log.i(TAG, "Public " + label + " advertiser addressType=" + addressType
-                    + " address=" + address);
-            System.out.println("Public " + label + " advertiser addressType=" + addressType
-                    + " address=" + address);
+            if (current != this) return;
+            handler.removeCallbacks(timeout);
+            if (addressType != ADDRESS_TYPE_PUBLIC) {
+                retryAfterFailure("Controller returned a non-public address");
+                return;
+            }
+            if (!loggedAddress) {
+                System.out.println("Public CPS advertiser addressType=" + addressType + " address=" + address);
+                loggedAddress = true;
+            }
+            handler.removeCallbacks(checkSet);
+            handler.postDelayed(checkSet, 30000);
         }
     }
 }
