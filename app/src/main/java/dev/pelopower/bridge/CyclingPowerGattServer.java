@@ -17,6 +17,7 @@ import android.bluetooth.le.AdvertiseData;
 import android.bluetooth.le.AdvertiseSettings;
 import android.bluetooth.le.BluetoothLeAdvertiser;
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Handler;
@@ -30,6 +31,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -85,6 +87,11 @@ public final class CyclingPowerGattServer {
         Delivery inFlight;
     }
     private final Map<BluetoothDevice, ClientQueue> queues = new HashMap<>();
+    private final SharedPreferences subscriptions;
+    private byte[] latestPower = CyclingPowerMeasurement.metrics(0,
+            new WheelTracker.State(0, 0), new CadenceTracker.State(0, 0));
+    private byte[] latestCadence = CyclingCadenceMeasurement.wheelAndCrankData(
+            new WheelTracker.State(0, 0), new CadenceTracker.State(0, 0));
     private BluetoothAdapter adapter;
     private BluetoothGattServer gattServer;
     private BluetoothGattCharacteristic measurement;
@@ -105,6 +112,7 @@ public final class CyclingPowerGattServer {
     public CyclingPowerGattServer(Context context, StatusListener statusListener) {
         this.context = context.getApplicationContext();
         this.statusListener = statusListener;
+        subscriptions = context.getSharedPreferences("bonded_cccd", Context.MODE_PRIVATE);
     }
 
     public String start() {
@@ -208,12 +216,16 @@ public final class CyclingPowerGattServer {
                 .setTimeout(0)
                 .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
                 .build();
+        // A passive sensor search sees only the primary packet. Include our short
+        // name there when Android accepted the rename, keeping the legacy payload bounded.
+        boolean includePrimaryName = ADVERTISING_NAME.equals(adapter.getName());
         powerAdvertiseData = new AdvertiseData.Builder()
+                .setIncludeDeviceName(includePrimaryName)
                 .addServiceUuid(new ParcelUuid(CPS))
                 .setIncludeTxPowerLevel(false)
                 .build();
         scanResponse = new AdvertiseData.Builder()
-                .setIncludeDeviceName(true)
+                .setIncludeDeviceName(!includePrimaryName)
                 .build();
 
         service.addCharacteristic(measurement);
@@ -241,13 +253,54 @@ public final class CyclingPowerGattServer {
                 sample.cadenceRpm(), sample.monotonicMillis());
         WheelTracker.State wheel = wheelTracker.accept(
                 sample.speedCentiKph(), sample.monotonicMillis());
-        byte[] powerValue = CyclingPowerMeasurement.metrics(sample.watts(), wheel, cadence);
-        byte[] cadenceValue = CyclingCadenceMeasurement.wheelAndCrankData(wheel, cadence);
+        latestPower = CyclingPowerMeasurement.metrics(sample.watts(), wheel, cadence);
+        latestCadence = CyclingCadenceMeasurement.wheelAndCrankData(wheel, cadence);
         for (BluetoothDevice device : powerSubscribers) {
-            enqueue(device, new Delivery(measurement, powerValue, false));
+            enqueue(device, new Delivery(measurement, latestPower, false));
         }
         for (BluetoothDevice device : cadenceSubscribers) {
-            enqueue(device, new Delivery(cadenceMeasurement, cadenceValue, false));
+            enqueue(device, new Delivery(cadenceMeasurement, latestCadence, false));
+        }
+    }
+
+    void bondChanged(BluetoothDevice device, int state) {
+        if (device == null || !hasBluetoothPermission()) return;
+        if (state == BluetoothDevice.BOND_NONE) {
+            subscriptions.edit().remove(device.getAddress()).apply();
+        } else if (state == BluetoothDevice.BOND_BONDED) {
+            saveSubscriptions(device);
+        }
+    }
+
+    private void saveSubscriptions(BluetoothDevice device) {
+        if (!hasBluetoothPermission() || device.getBondState() != BluetoothDevice.BOND_BONDED) return;
+        Set<String> enabled = new HashSet<>();
+        if (powerSubscribers.contains(device)) enabled.add(MEASUREMENT.toString());
+        if (cadenceSubscribers.contains(device)) enabled.add(CSC_MEASUREMENT.toString());
+        if (controlPointSubscribers.contains(device)) enabled.add(SC_CONTROL_POINT.toString());
+        subscriptions.edit().putStringSet(device.getAddress(), enabled).apply();
+    }
+
+    private void restoreSubscriptions(BluetoothDevice device) {
+        if (!hasBluetoothPermission()) return;
+        if (device.getBondState() != BluetoothDevice.BOND_BONDED) {
+            subscriptions.edit().remove(device.getAddress()).apply();
+            return;
+        }
+        Set<String> enabled = subscriptions.getStringSet(device.getAddress(), Collections.emptySet());
+        if (enabled.contains(MEASUREMENT.toString())) powerSubscribers.add(device);
+        if (enabled.contains(CSC_MEASUREMENT.toString())) cadenceSubscribers.add(device);
+        if (enabled.contains(SC_CONTROL_POINT.toString())) controlPointSubscribers.add(device);
+        if (powerSubscribers.contains(device)) sendSnapshot(device, measurement);
+        if (cadenceSubscribers.contains(device)) sendSnapshot(device, cadenceMeasurement);
+    }
+
+    private void sendSnapshot(BluetoothDevice device, BluetoothGattCharacteristic characteristic) {
+        if (characteristic == null) return;
+        if (characteristic == measurement && powerSubscribers.contains(device)) {
+            enqueue(device, new Delivery(characteristic, latestPower, false));
+        } else if (characteristic == cadenceMeasurement && cadenceSubscribers.contains(device)) {
+            enqueue(device, new Delivery(characteristic, latestCadence, false));
         }
     }
 
@@ -497,12 +550,16 @@ public final class CyclingPowerGattServer {
 
         @Override
         public void onConnectionStateChange(BluetoothDevice device, int status, int newState) {
-            if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                handler.post(() -> queues.remove(device));
-                powerSubscribers.remove(device);
-                cadenceSubscribers.remove(device);
-                controlPointSubscribers.remove(device);
-            }
+            handler.post(() -> {
+                if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
+                    restoreSubscriptions(device);
+                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    queues.remove(device);
+                    powerSubscribers.remove(device);
+                    cadenceSubscribers.remove(device);
+                    controlPointSubscribers.remove(device);
+                }
+            });
             Log.i(TAG, "BLE client state=" + newState + " status=" + status);
         }
 
@@ -561,29 +618,36 @@ public final class CyclingPowerGattServer {
                 boolean responseNeeded,
                 int offset,
                 byte[] value) {
-            Set<BluetoothDevice> target = subscribersFor(descriptor);
-            byte[] enableValue = isControlPointDescriptor(descriptor)
-                    ? BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
-                    : BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE;
-            int status = BluetoothGatt.GATT_SUCCESS;
-            if (preparedWrite || offset != 0) {
-                status = BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED;
-            } else if (java.util.Arrays.equals(value, enableValue)) {
-                target.add(device);
-            } else if (java.util.Arrays.equals(
-                    value, BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE)) {
-                target.remove(device);
-            } else {
-                status = BluetoothGatt.GATT_FAILURE;
-            }
-            BluetoothGattCharacteristic characteristic = descriptor.getCharacteristic();
-            String characteristicUuid = characteristic == null
-                    ? "unknown" : characteristic.getUuid().toString();
-            Log.i(TAG, "BLE subscription characteristic=" + characteristicUuid
-                    + " enabled=" + target.contains(device) + " status=" + status);
-            if (responseNeeded && hasBluetoothPermission() && gattServer != null) {
-                gattServer.sendResponse(device, requestId, status, offset, value);
-            }
+            handler.post(() -> {
+                Set<BluetoothDevice> target = subscribersFor(descriptor);
+                byte[] enableValue = isControlPointDescriptor(descriptor)
+                        ? BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+                        : BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE;
+                boolean newlyEnabled = false;
+                int status = BluetoothGatt.GATT_SUCCESS;
+                if (preparedWrite || offset != 0) {
+                    status = BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED;
+                } else if (java.util.Arrays.equals(value, enableValue)) {
+                    newlyEnabled = target.add(device);
+                } else if (java.util.Arrays.equals(
+                        value, BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE)) {
+                    target.remove(device);
+                } else {
+                    status = BluetoothGatt.GATT_FAILURE;
+                }
+                BluetoothGattCharacteristic characteristic = descriptor.getCharacteristic();
+                String characteristicUuid = characteristic == null
+                        ? "unknown" : characteristic.getUuid().toString();
+                Log.i(TAG, "BLE subscription characteristic=" + characteristicUuid
+                        + " enabled=" + target.contains(device) + " status=" + status);
+                if (responseNeeded && hasBluetoothPermission() && gattServer != null) {
+                    gattServer.sendResponse(device, requestId, status, offset, value);
+                }
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    saveSubscriptions(device);
+                    if (newlyEnabled) sendSnapshot(device, characteristic);
+                }
+            });
         }
 
         @Override

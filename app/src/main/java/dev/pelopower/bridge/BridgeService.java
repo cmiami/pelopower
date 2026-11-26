@@ -5,6 +5,7 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
 import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -56,15 +57,16 @@ public final class BridgeService extends Service implements PowerSource.Listener
             setStatus(newState + "; source=" + (source == null ? "starting" : source.name()));
         });
         workoutState = gate.state();
-        ensureBle();
-        source = PelotonPowerSource.forDevice(this);
-        source.start(this);
         IntentFilter bluetoothFilter = new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED);
+        bluetoothFilter.addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED);
         if (Build.VERSION.SDK_INT >= 33) {
             registerReceiver(bluetoothStateReceiver, bluetoothFilter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(bluetoothStateReceiver, bluetoothFilter);
         }
+        ensureBle();
+        source = PelotonPowerSource.forDevice(this);
+        source.start(this);
         handler.postDelayed(staleDataCheck, 1_000L);
     }
 
@@ -151,6 +153,11 @@ public final class BridgeService extends Service implements PowerSource.Listener
     private final BroadcastReceiver bluetoothStateReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
+            if (BluetoothDevice.ACTION_BOND_STATE_CHANGED.equals(intent.getAction())) {
+                ble.bondChanged(intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE),
+                        intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR));
+                return;
+            }
             int state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR);
             if (state == BluetoothAdapter.STATE_ON) {
                 ensureBle();
