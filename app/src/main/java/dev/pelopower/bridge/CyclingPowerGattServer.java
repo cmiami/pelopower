@@ -623,12 +623,12 @@ public final class CyclingPowerGattServer {
                 byte[] enableValue = isControlPointDescriptor(descriptor)
                         ? BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
                         : BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE;
-                boolean newlyEnabled = false;
+                boolean enable = java.util.Arrays.equals(value, enableValue);
                 int status = BluetoothGatt.GATT_SUCCESS;
                 if (preparedWrite || offset != 0) {
                     status = BluetoothGatt.GATT_REQUEST_NOT_SUPPORTED;
-                } else if (java.util.Arrays.equals(value, enableValue)) {
-                    newlyEnabled = target.add(device);
+                } else if (enable) {
+                    target.add(device);
                 } else if (java.util.Arrays.equals(
                         value, BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE)) {
                     target.remove(device);
@@ -645,7 +645,8 @@ public final class CyclingPowerGattServer {
                 }
                 if (status == BluetoothGatt.GATT_SUCCESS) {
                     saveSubscriptions(device);
-                    if (newlyEnabled) sendSnapshot(device, characteristic);
+                    // A bonded client may repeat the write after its local listener is ready.
+                    if (enable) sendSnapshot(device, characteristic);
                 }
             });
         }
